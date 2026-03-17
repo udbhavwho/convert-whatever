@@ -8,3 +8,5 @@ build/
 *.spec
 .vscode/
 .DS_Store
+tempCodeRunnerFile.py
+src /tempCodeRunnerFile.py
