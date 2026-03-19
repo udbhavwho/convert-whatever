@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from PySide6.QtCore import QObject, Signal
 
 from converters.image_converter import compress_single_image
@@ -5,7 +7,7 @@ from converters.image_converter import compress_single_image
 
 class ImageCompressWorker(QObject):
     finished = Signal(str, str)
-    progress = Signal(str)
+    progress = Signal(str, int)
 
     def __init__(self, input_files: list[str], output_dir: str, strength: int):
         super().__init__()
@@ -30,7 +32,11 @@ class ImageCompressWorker(QObject):
                 )
                 return
 
-            self.progress.emit(f"Compressing {index}/{total}: {input_file}")
+            start_percent = int(((index - 1) / total) * 100)
+            self.progress.emit(
+                f"Compressing {index}/{total}: {Path(input_file).name}",
+                start_percent,
+            )
 
             ok, result = compress_single_image(
                 input_file=input_file,
@@ -42,6 +48,12 @@ class ImageCompressWorker(QObject):
                 success_count += 1
             else:
                 failure_messages.append(result)
+
+            end_percent = int((index / total) * 100)
+            self.progress.emit(
+                f"Finished {index}/{total}: {Path(input_file).name}",
+                end_percent,
+            )
 
         if success_count == total:
             self.finished.emit(

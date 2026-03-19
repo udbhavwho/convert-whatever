@@ -1,23 +1,62 @@
+import os
+import platform
+import signal
 import subprocess
 from pathlib import Path
+from typing import Callable, Optional, Tuple
+
+
+SUPPORTED_AUDIO_OUTPUTS = {
+    "mp3": ".mp3",
+    "wav": ".wav",
+    "aac": ".aac",
+    "flac": ".flac",
+}
+
+
+def _timestamp_to_seconds(value: str) -> float:
+    try:
+        hours, minutes, seconds = value.split(":")
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    except Exception:
+        return 0.0
 
 
 class FFmpegConverter:
-    @staticmethod
-    def video_to_audio(input_file: str, output_file: str) -> tuple[bool, str]:
-        input_path = Path(input_file)
-        output_path = Path(output_file)
+    def __init__(self):
+        self.current_process: Optional[subprocess.Popen] = None
 
-        if not input_path.exists():
-            return False, f"Input file not found: {input_path}"
+    def cancel(self):
+        process = self.current_process
+        if not process or process.poll() is not None:
+            return
 
+        try:
+            if platform.system() == "Windows":
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+            else:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except Exception:
+            try:
+                process.kill()
+            except Exception:
+                pass
+
+    def get_media_duration(self, input_file: str) -> float:
         command = [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(input_path),
-            "-vn",
-            str(output_path),
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            input_file,
         ]
 
         try:
@@ -27,8 +66,168 @@ class FFmpegConverter:
                 text=True,
                 check=True,
             )
-            return True, result.stdout or "Conversion completed successfully."
-        except subprocess.CalledProcessError as e:
-            return False, e.stderr or "FFmpeg conversion failed."
+            return float(result.stdout.strip())
+        except Exception:
+            return 0.0
+
+    def _run_ffmpeg_command(
+        self,
+        command: list[str],
+        input_file: str,
+        progress_callback: Optional[Callable[[int], None]] = None,
+    ) -> Tuple[bool, str]:
+        duration = self.get_media_duration(input_file)
+
+        popen_kwargs = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "bufsize": 1,
+        }
+
+        if platform.system() == "Windows":
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs["start_new_session"] = True
+
+        try:
+            self.current_process = subprocess.Popen(command, **popen_kwargs)
+
+            if progress_callback is not None:
+                progress_callback(0)
+
+            if self.current_process.stdout is not None:
+                for raw_line in self.current_process.stdout:
+                    line = raw_line.strip()
+
+                    if (
+                        progress_callback is not None
+                        and duration > 0
+                        and line.startswith("out_time=")
+                    ):
+                        current_seconds = _timestamp_to_seconds(
+                            line.split("=", 1)[1]
+                        )
+                        percent = int(
+                            min(100, max(0, (current_seconds / duration) * 100))
+                        )
+                        progress_callback(percent)
+
+                    elif progress_callback is not None and line == "progress=end":
+                        progress_callback(100)
+
+            stderr_text = ""
+            if self.current_process.stderr is not None:
+                stderr_text = self.current_process.stderr.read()
+
+            return_code = self.current_process.wait()
+
+            if return_code == 0:
+                if progress_callback is not None:
+                    progress_callback(100)
+                return True, "Success"
+
+            if return_code < 0 or return_code == 255:
+                return False, "Cancelled"
+
+            return False, stderr_text or "FFmpeg command failed."
+
         except Exception as e:
             return False, str(e)
+        finally:
+            self.current_process = None
+
+    def video_to_audio(
+        self,
+        input_file: str,
+        output_file: str,
+        progress_callback: Optional[Callable[[int], None]] = None,
+    ) -> Tuple[bool, str]:
+        input_path = Path(input_file)
+        output_path = Path(output_file)
+
+        if not input_path.exists():
+            return False, f"Input file not found: {input_path}"
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        command = [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            "-i",
+            str(input_path),
+            "-vn",
+            str(output_path),
+        ]
+
+        ok, result = self._run_ffmpeg_command(
+            command=command,
+            input_file=str(input_path),
+            progress_callback=progress_callback,
+        )
+
+        if ok:
+            return True, str(output_path)
+
+        return False, result
+
+    def video_to_gif(
+        self,
+        input_file: str,
+        output_file: str,
+        fps: int = 10,
+        width: Optional[int] = 480,
+        progress_callback: Optional[Callable[[int], None]] = None,
+    ) -> Tuple[bool, str]:
+        input_path = Path(input_file)
+        output_path = Path(output_file)
+
+        if not input_path.exists():
+            return False, f"Input file not found: {input_path}"
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if width is None:
+            filter_chain = (
+                f"fps={fps},split[s0][s1];"
+                f"[s0]palettegen[p];"
+                f"[s1][p]paletteuse"
+            )
+        else:
+            filter_chain = (
+                f"fps={fps},scale={width}:-1:flags=lanczos,"
+                f"split[s0][s1];"
+                f"[s0]palettegen[p];"
+                f"[s1][p]paletteuse"
+            )
+
+        command = [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            "-i",
+            str(input_path),
+            "-vf",
+            filter_chain,
+            str(output_path),
+        ]
+
+        ok, result = self._run_ffmpeg_command(
+            command=command,
+            input_file=str(input_path),
+            progress_callback=progress_callback,
+        )
+
+        if ok:
+            return True, str(output_path)
+
+        return False, result
