@@ -13,6 +13,24 @@ SUPPORTED_AUDIO_OUTPUTS = {
     "flac": ".flac",
 }
 
+SUPPORTED_VIDEO_OUTPUTS = {
+    "mp4": ".mp4",
+    "mkv": ".mkv",
+    "mov": ".mov",
+    "avi": ".avi",
+}
+
+SUPPORTED_MEDIA_CONVERT_OUTPUTS = {
+    "audio": ["mp3", "wav", "aac", "flac"],
+    "video": ["mp4", "mkv", "mov", "avi"],
+}
+
+SUPPORTED_FRAME_OUTPUTS = {
+    "png": ".png",
+    "jpg": ".jpg",
+    "webp": ".webp",
+}
+
 
 def _timestamp_to_seconds(value: str) -> float:
     try:
@@ -229,5 +247,172 @@ class FFmpegConverter:
 
         if ok:
             return True, str(output_path)
+
+        return False, result
+
+    def gif_to_video(
+        self,
+        input_file: str,
+        output_file: str,
+        output_format: str,
+        progress_callback: Optional[Callable[[int], None]] = None,
+    ) -> Tuple[bool, str]:
+        input_path = Path(input_file)
+        output_path = Path(output_file)
+
+        if not input_path.exists():
+            return False, f"Input file not found: {input_path}"
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if output_format == "mp4":
+            codec_args = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart"]
+        elif output_format == "mkv":
+            codec_args = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-an"]
+        elif output_format == "mov":
+            codec_args = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-an"]
+        elif output_format == "avi":
+            codec_args = ["-c:v", "mpeg4", "-an"]
+        else:
+            return False, f"Unsupported video output format: {output_format}"
+
+        command = [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            "-i",
+            str(input_path),
+            *codec_args,
+            str(output_path),
+        ]
+
+        ok, result = self._run_ffmpeg_command(
+            command=command,
+            input_file=str(input_path),
+            progress_callback=progress_callback,
+        )
+
+        if ok:
+            return True, str(output_path)
+
+        return False, result
+
+    def convert_media_format(
+        self,
+        input_file: str,
+        output_file: str,
+        media_family: str,
+        output_format: str,
+        progress_callback: Optional[Callable[[int], None]] = None,
+    ) -> Tuple[bool, str]:
+        input_path = Path(input_file)
+        output_path = Path(output_file)
+
+        if not input_path.exists():
+            return False, f"Input file not found: {input_path}"
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if media_family == "audio":
+            if output_format == "mp3":
+                codec_args = ["-vn", "-c:a", "libmp3lame", "-q:a", "2"]
+            elif output_format == "wav":
+                codec_args = ["-vn", "-c:a", "pcm_s16le"]
+            elif output_format == "aac":
+                codec_args = ["-vn", "-c:a", "aac", "-b:a", "192k"]
+            elif output_format == "flac":
+                codec_args = ["-vn", "-c:a", "flac"]
+            else:
+                return False, f"Unsupported audio output format: {output_format}"
+
+        elif media_family == "video":
+            if output_format == "mp4":
+                codec_args = ["-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart"]
+            elif output_format == "mkv":
+                codec_args = ["-c:v", "libx264", "-c:a", "aac"]
+            elif output_format == "mov":
+                codec_args = ["-c:v", "libx264", "-c:a", "aac"]
+            elif output_format == "avi":
+                codec_args = ["-c:v", "mpeg4", "-c:a", "mp3"]
+            else:
+                return False, f"Unsupported video output format: {output_format}"
+
+        else:
+            return False, f"Unsupported media family: {media_family}"
+
+        command = [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            "-i",
+            str(input_path),
+            *codec_args,
+            str(output_path),
+        ]
+
+        ok, result = self._run_ffmpeg_command(
+            command=command,
+            input_file=str(input_path),
+            progress_callback=progress_callback,
+        )
+
+        if ok:
+            return True, str(output_path)
+
+        return False, result
+
+    def extract_frames(
+        self,
+        input_file: str,
+        output_pattern: str,
+        image_format: str = "png",
+        sample_fps: Optional[int] = None,
+        progress_callback: Optional[Callable[[int], None]] = None,
+    ) -> Tuple[bool, str]:
+        input_path = Path(input_file)
+
+        if not input_path.exists():
+            return False, f"Input file not found: {input_path}"
+
+        if image_format not in SUPPORTED_FRAME_OUTPUTS:
+            return False, f"Unsupported frame output format: {image_format}"
+
+        output_parent = Path(output_pattern).parent
+        output_parent.mkdir(parents=True, exist_ok=True)
+
+        vf_args = []
+        if sample_fps is not None and sample_fps > 0:
+            vf_args = ["-vf", f"fps={sample_fps}"]
+
+        command = [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            "-i",
+            str(input_path),
+            *vf_args,
+            output_pattern,
+        ]
+
+        ok, result = self._run_ffmpeg_command(
+            command=command,
+            input_file=str(input_path),
+            progress_callback=progress_callback,
+        )
+
+        if ok:
+            return True, str(output_parent)
 
         return False, result
